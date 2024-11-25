@@ -1,0 +1,7 @@
+[mysqld]
+plugin-load-add=ha_columnstore.so
+
+collation_server = utf8_general_ci
+character_set_server = utf8
+
+columnstore_use_import_for_batchinsert = ON

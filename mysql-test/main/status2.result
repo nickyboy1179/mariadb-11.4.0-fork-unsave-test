@@ -1,0 +1,203 @@
+#
+# Bug#24289 Status Variable "Questions" gets wrong values with Stored Routines
+#
+FLUSH STATUS;
+CREATE FUNCTION testQuestion() RETURNS INTEGER
+BEGIN
+DECLARE foo INTEGER;
+DECLARE bar INTEGER;
+SET foo=1;
+SET bar=2;
+RETURN foo;
+END $$
+CREATE PROCEDURE testQuestion2()
+BEGIN
+SELECT 1;
+END $$
+DROP TABLE IF EXISTS t1,t2;
+CREATE EVENT ev1 ON SCHEDULE EVERY 1 SECOND
+DO INSERT INTO t1 VALUES(1);
+CREATE TABLE t1 (c1 INT);
+CREATE TABLE t2 (c1 INT);
+Assert Questions == 7
+SHOW STATUS LIKE 'Questions';
+Variable_name	Value
+Questions	7
+SELECT testQuestion();
+testQuestion()
+1
+Assert Questions == 9
+SHOW STATUS LIKE 'Questions';
+Variable_name	Value
+Questions	9
+CALL testQuestion2();
+1
+1
+Assert Questions == 11
+SHOW STATUS LIKE 'Questions';
+Variable_name	Value
+Questions	11
+SELECT 1;
+1
+1
+Assert Questions == 13
+SHOW STATUS LIKE 'Questions';
+Variable_name	Value
+Questions	13
+connect  con1,localhost,root,,;
+connection con1;
+SELECT 1;
+1
+1
+connection default;
+disconnect con1;
+Assert Questions == 14
+SHOW STATUS LIKE 'Questions';
+Variable_name	Value
+Questions	14
+CREATE TRIGGER trigg1 AFTER INSERT ON t1
+FOR EACH ROW BEGIN
+INSERT INTO t2 VALUES (1);
+END;
+$$
+Assert Questions == 16
+SHOW STATUS LIKE 'Questions';
+Variable_name	Value
+Questions	16
+INSERT INTO t1 VALUES (1);
+Assert Questions == 18
+SHOW STATUS LIKE 'Questions';
+Variable_name	Value
+Questions	18
+DROP PROCEDURE testQuestion2;
+DROP TRIGGER trigg1;
+DROP FUNCTION testQuestion;
+DROP EVENT ev1;
+DROP TABLE t1,t2;
+#
+# End of 5.5 tests
+#
+select variable_value < 1024*1024*1024 from information_schema.global_status where variable_name='memory_used';
+variable_value < 1024*1024*1024
+1
+#
+# End of 10.2 tests
+#
+#
+# MDEV-32441 SENT_ROWS shows random wrong values when stored function
+# is selected
+#
+create table t1 (a int) engine=aria;
+insert into t1 values (1),(2),(3),(4),(5),(6),(7);
+flush status;
+create function if not exists f() returns int return
+(
+select sum(a) > 0 from t1
+);
+select f() from seq_1_to_10 where seq%5 = 0;
+f()
+1
+1
+show status like "rows_sent";
+Variable_name	Value
+Rows_sent	2
+# Test simple query
+set debug_sync='RESET';
+connect con1,localhost,root,,;
+set debug_sync='end_of_statement SIGNAL parked WAIT_FOR go';
+select f() from seq_1_to_10 where seq%5 = 0;
+connection default;
+set debug_sync='now WAIT_FOR parked';
+# Result should be 2, 10+7*2=24
+select sent_rows, examined_rows from information_schema.processlist where id=#;
+sent_rows	examined_rows
+2	24
+set debug_sync='now signal go';
+connection con1;
+f()
+1
+1
+# Test union
+set debug_sync='end_of_statement SIGNAL parked WAIT_FOR go';
+select a from t1 where a not in (1,2,3,4) union select a from t1 where a not in (4,5,6,7);
+connection default;
+set debug_sync='now WAIT_FOR parked';
+# Result should be 6, 7+7+6=20 (2 scans of 7 rows + 6 rows in union)
+select sent_rows, examined_rows from information_schema.processlist where id=#;
+sent_rows	examined_rows
+6	20
+set debug_sync='now signal go';
+connection con1;
+a
+5
+6
+7
+1
+2
+3
+# Test handler calls
+handler t1 open;
+set debug_sync='end_of_statement SIGNAL parked WAIT_FOR go';
+handler t1 read NEXT LIMIT 2,4;
+connection default;
+set debug_sync='now WAIT_FOR parked';
+# Result should be 2, 10+7*2=24
+select sent_rows, examined_rows from information_schema.processlist where id=#;
+sent_rows	examined_rows
+4	6
+set debug_sync='now signal go';
+connection con1;
+a
+3
+4
+5
+6
+handler t1 close;
+connection default;
+drop function f;
+drop table t1;
+# Test Stored procedures
+create or replace table t (a int primary key);
+insert into t select seq from seq_1_to_100;
+create procedure pr()
+begin
+select * from t where a between 1 and 2 ;
+select * from t where a between 4 and 6 ;
+end $
+connection con1;
+flush status;
+set debug_sync='end_of_statement SIGNAL parked WAIT_FOR go EXECUTE 2';
+call pr();
+connection default;
+set debug_sync='now WAIT_FOR parked';
+select examined_rows, sent_rows, info from information_schema.processlist where id=#;
+examined_rows	sent_rows	info
+2	2	select * from t where a between 1 and 2
+set debug_sync='now signal go';
+select examined_rows, sent_rows, info from information_schema.processlist where id=#;
+examined_rows	sent_rows	info
+3	3	select * from t where a between 4 and 6
+set debug_sync='now signal go';
+connection con1;
+a
+1
+2
+a
+4
+5
+6
+show status like '%rows%';
+Variable_name	Value
+Not_flushed_delayed_rows	0
+Rows_read	8
+Rows_sent	5
+Rows_tmp_read	0
+Sort_rows	0
+connection default;
+drop table t;
+drop procedure pr;
+disconnect con1;
+set debug_sync= RESET;
+#
+# End of 11.3 tests
+#

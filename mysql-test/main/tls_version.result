@@ -1,0 +1,16 @@
+Variable_name	Value
+Ssl_version	TLSv1.2
+Variable_name	Value
+Ssl_version	TLSv1.2
+Variable_name	Value
+Ssl_version	TLSv1.1
+Variable_name	Value
+Ssl_version	TLSv1.1
+Variable_name	Value
+Ssl_version	TLSv1.2
+Variable_name	Value
+Ssl_version	TLSv1.2
+@@tls_version
+TLSv1.1,TLSv1.2
+call mtr.add_suppression("TLSv1.0 and TLSv1.1 are insecure");
+FOUND 1 /TLSv1.0 and TLSv1.1 are insecure/ in mysqld.1.err

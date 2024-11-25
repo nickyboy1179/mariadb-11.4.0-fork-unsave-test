@@ -1,0 +1,9 @@
+# Enable after fix MDEV-27904
+-- source include/no_view_protocol.inc
+
+--source include/have_utf8mb4.inc
+--source include/have_innodb.inc
+
+let $engine= InnoDB;
+--source include/ctype_utf8mb4.inc
+

@@ -1,0 +1,191 @@
+--source include/not_embedded.inc
+--source include/have_sequence.inc
+--source include/have_debug_sync.inc
+--source include/have_sequence.inc
+
+--echo #
+--echo # Bug#24289 Status Variable "Questions" gets wrong values with Stored Routines
+--echo #
+--disable_ps2_protocol
+FLUSH STATUS;
+DELIMITER $$;
+CREATE FUNCTION testQuestion() RETURNS INTEGER
+BEGIN
+  DECLARE foo INTEGER;
+  DECLARE bar INTEGER;
+  SET foo=1;
+  SET bar=2;
+  RETURN foo;
+END $$
+CREATE PROCEDURE testQuestion2()
+BEGIN
+  SELECT 1;
+END $$
+DELIMITER ;$$
+--disable_warnings
+DROP TABLE IF EXISTS t1,t2;
+CREATE EVENT ev1 ON SCHEDULE EVERY 1 SECOND
+  DO INSERT INTO t1 VALUES(1);
+--enable_warnings
+CREATE TABLE t1 (c1 INT);
+CREATE TABLE t2 (c1 INT);
+
+--echo Assert Questions == 7
+SHOW STATUS LIKE 'Questions';
+SELECT testQuestion();
+--echo Assert Questions == 9
+SHOW STATUS LIKE 'Questions';
+CALL testQuestion2();
+--echo Assert Questions == 11
+SHOW STATUS LIKE 'Questions';
+SELECT 1;
+--echo Assert Questions == 13
+SHOW STATUS LIKE 'Questions';
+connect (con1,localhost,root,,);
+connection con1;
+SELECT 1;
+connection default;
+disconnect con1;
+--echo Assert Questions == 14
+SHOW STATUS LIKE 'Questions';
+DELIMITER $$;
+CREATE TRIGGER trigg1 AFTER INSERT ON t1
+  FOR EACH ROW BEGIN
+   INSERT INTO t2 VALUES (1);
+  END;
+$$
+DELIMITER ;$$
+--echo Assert Questions == 16
+SHOW STATUS LIKE 'Questions';
+INSERT INTO t1 VALUES (1);
+--echo Assert Questions == 18
+SHOW STATUS LIKE 'Questions';
+# TODO: Uncomment the lines below when FLUSH GLOBAL STATUS is implemented.
+# FLUSH STATUS;
+# SHOW GLOBAL STATUS LIKE 'Questions';
+DROP PROCEDURE testQuestion2;
+DROP TRIGGER trigg1;
+DROP FUNCTION testQuestion;
+DROP EVENT ev1;
+DROP TABLE t1,t2;
+--enable_ps2_protocol
+
+--echo #
+--echo # End of 5.5 tests
+--echo #
+
+select variable_value < 1024*1024*1024 from information_schema.global_status where variable_name='memory_used';
+
+--echo #
+--echo # End of 10.2 tests
+--echo #
+
+--echo #
+--echo # MDEV-32441 SENT_ROWS shows random wrong values when stored function
+--echo # is selected
+--echo #
+
+create table t1 (a int) engine=aria;
+insert into t1 values (1),(2),(3),(4),(5),(6),(7);
+flush status;
+create function if not exists f() returns int return
+(
+  select sum(a) > 0 from t1
+);
+
+--disable_ps_protocol
+select f() from seq_1_to_10 where seq%5 = 0;
+show status like "rows_sent";
+--enable_ps_protocol
+
+--echo # Test simple query
+
+set debug_sync='RESET';
+--connect(con1,localhost,root,,)
+--let $conid= `select connection_id()`
+--let $replace_conid=id=$conid
+set debug_sync='end_of_statement SIGNAL parked WAIT_FOR go';
+--send select f() from seq_1_to_10 where seq%5 = 0
+
+--connection default
+set debug_sync='now WAIT_FOR parked';
+--echo # Result should be 2, 10+7*2=24
+--replace_result $replace_conid id=#
+eval select sent_rows, examined_rows from information_schema.processlist where id=$conid;
+set debug_sync='now signal go';
+--connection con1
+--reap
+
+--echo # Test union
+
+set debug_sync='end_of_statement SIGNAL parked WAIT_FOR go';
+--send select a from t1 where a not in (1,2,3,4) union select a from t1 where a not in (4,5,6,7)
+--connection default
+set debug_sync='now WAIT_FOR parked';
+--echo # Result should be 6, 7+7+6=20 (2 scans of 7 rows + 6 rows in union)
+--replace_result $replace_conid id=#
+eval select sent_rows, examined_rows from information_schema.processlist where id=$conid;
+set debug_sync='now signal go';
+--connection con1
+--reap
+
+--echo # Test handler calls
+handler t1 open;
+set debug_sync='end_of_statement SIGNAL parked WAIT_FOR go';
+--send handler t1 read NEXT LIMIT 2,4
+--connection default
+set debug_sync='now WAIT_FOR parked';
+--echo # Result should be 2, 10+7*2=24
+--replace_result $replace_conid id=#
+eval select sent_rows, examined_rows from information_schema.processlist where id=$conid;
+set debug_sync='now signal go';
+--connection con1
+--reap
+handler t1 close;
+
+--connection default
+drop function f;
+drop table t1;
+
+--echo # Test Stored procedures
+
+create or replace table t (a int primary key);
+insert into t select seq from seq_1_to_100;
+--delimiter $
+create procedure pr()
+begin
+  select * from t where a between 1 and 2 ;
+  select * from t where a between 4 and 6 ;
+end $
+--delimiter ;
+
+--connection con1
+flush status;
+set debug_sync='end_of_statement SIGNAL parked WAIT_FOR go EXECUTE 2';
+
+--send  call pr()
+
+--connection default
+set debug_sync='now WAIT_FOR parked';
+--replace_result $replace_conid id=#
+eval select examined_rows, sent_rows, info from information_schema.processlist where id=$conid;
+set debug_sync='now signal go';
+--replace_result $replace_conid id=#
+eval select examined_rows, sent_rows, info from information_schema.processlist where id=$conid;
+set debug_sync='now signal go';
+
+--connection con1
+--reap
+show status like '%rows%';
+
+connection default;
+# Cleanup
+drop table t;
+drop procedure pr;
+
+--disconnect con1
+set debug_sync= RESET;
+
+--echo #
+--echo # End of 11.3 tests
+--echo #
